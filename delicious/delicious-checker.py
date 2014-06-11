@@ -21,7 +21,8 @@ def _wrap_with(code):
         c = code
         if bold:
             c = "1;{}".format(c)
-        return "\033[{}m{}\033[0m".format(c, text)
+        cast = unicode if isinstance(text, unicode) else str
+        return cast("\033[{}m{}\033[0m").format(c, text)
     
     return inner
 
@@ -103,6 +104,21 @@ class DeliciousClient(object):
             posts.append(post)
         return posts
     
+    def delete_post(self, post):
+        self.__throttle()
+        
+        url = '{}/posts/delete?url={}'.format(self.__root_path, post.url)
+        headers = self.__build_base_headers()
+        self.__connection.request('GET', url, headers=headers)
+        response = self.__connection.getresponse()
+        self.__check_no_error(response)
+        content = response.read()
+        
+        result = ElementTree.fromstring(content)
+        code = result.attrib["code"]
+        if code != 'done':
+            raise DeliciousError("Can't delete post {} : {}".format(post.url, code))
+    
     def __enter__(self):
         pass
     
@@ -140,7 +156,7 @@ def url_exists(url):
     elif scheme == 'https':
         connection = HTTPSConnection(hostname, port, timeout=timeout)
     else:
-        raise RuntimeError('{}: not an HTTP/HTTPS URL'.format(url))
+        raise ValueError('{}: not an HTTP/HTTPS URL'.format(url))
     
     try:
         path = url_components.path
@@ -152,35 +168,32 @@ def url_exists(url):
         response = connection.getresponse()
         status = response.status
         return status not in xrange(400, 600)
-    except:
+    except Exception:
         return False
     finally:
         connection.close()
 
 
-def check_post(lock, post):
+def check_post(client, post, delete):
     url = post.url
     
-    with lock:
-        print "Controle du post " + url
-    
-    exists = url_exists(url)
-    
-    if not exists:
-        with lock:
-            print post.description
-            print red("\tCan't reach {}".format(url))
+    print u"Contrôle de {} ({}) ->".format(url, post.description),
+    if url_exists(url):
+        print green(u'OK')
+    else:
+        if delete:
+            client.delete_post(post)
+            print red(u'Supprimé')
+        else:
+            print red(u'KO')
 
 
 if __name__ == '__main__':
     arg_parser = argparse.ArgumentParser(description=u'Contrôler les favoris sur Delicious')
     arg_parser.add_argument('user', help=u"Nom d'utilisateur")
     arg_parser.add_argument('password', help=u'Mot de passe')
-    arg_parser.add_argument('--workers', type=int, help=u'Nombre de workers', default=4 * multiprocessing.cpu_count())
+    arg_parser.add_argument('--delete', action='store_true', help=u'Supprimer les posts injoignables')
     args = arg_parser.parse_args()
-    
-    manager = multiprocessing.Manager()
-    lock = manager.Lock()
     
     client = DeliciousClient(args.user, args.password)
     with client:
@@ -188,23 +201,5 @@ if __name__ == '__main__':
         posts = client.get_all_posts()
         print "Tous les posts ont ete recuperes"
     
-    print "Demarrage des processus ({})".format(args.workers)
-    pool = multiprocessing.Pool(args.workers)
-    try:
-        async_results = []
-        for post in posts:
-            args = (lock, post)
-            async_result = pool.apply_async(check_post, args)
-            async_results.append(async_result)
-        
-        pool.close()
-        
-        for async_result in async_results:
-            async_result.get()
-    except KeyboardInterrupt:
-        print "Demande d'arret"
-        pool.terminate()
-    finally:
-        print "Attente de la fin du pool..."
-        pool.join()
-        print "Attente terminee"
+    for post in posts:
+        check_post(client, post, args.delete)
