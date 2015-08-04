@@ -1,5 +1,5 @@
-==============
- Tests en C++
-==============
+================
+ Tests en Python
+================
 
 Petits programmes de test en Python
